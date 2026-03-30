@@ -4,6 +4,8 @@ import requests
 import linkcf 
 import json
 import os
+import cfrating
+import throwcf
 # 導入commands指令模組
 from discord.ext import commands
 from discord.app_commands import Choice
@@ -86,5 +88,26 @@ async def cnttocf(interaction: discord.Interaction, cfhandle: str):
 async def vercf(interaction: discord.Interaction):
     data = linkcf.vertifycf(interaction.user.name)
     await interaction.response.send_message(data, ephemeral=True)
-
+    
+@bot.tree.command(name="ratingcf")
+async def ratingcf(interaction: discord.Interaction, cfhandle: str):
+    await interaction.response.defer()
+    data = cfrating.rating(cfhandle)
+    if isinstance(data, str):
+        await interaction.followup.send(data)
+    else:
+        await interaction.followup.send(file=data)
+    
+@bot.tree.command(name="cfprob")
+async def cfprob(interaction: discord.Interaction, mnrating : int, mxrating : int, howmany : int):
+    await interaction.response.defer()
+    data = throwcf.askprob(
+        mnrating,
+        mxrating,
+        howmany
+    )
+    if isinstance(data, str):
+        await interaction.followup.send(embed=data)
+    else:
+        await interaction.followup.send(embed=data)
 bot.run(token)
