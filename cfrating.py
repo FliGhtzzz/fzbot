@@ -51,8 +51,6 @@ def rating(cfhandle):
     ax.scatter(x, y, facecolors='#FFFFFF', edgecolors='#EDC240', s=30, zorder=3)
 
     ax.set_title(f"Rating of {cfhandle} : {current_rating}", loc='left', fontsize=16, fontweight='bold', color='#445')
-    ax.set_ylabel("Rating")
-    
     ax.set_ylim(min(y) - 200 if min(y) > 200 else 0, mx + 200)
 
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))

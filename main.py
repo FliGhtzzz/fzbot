@@ -68,43 +68,53 @@ async def mobai(interaction: discord.Interaction, usr: discord.User):
 #     await interaction.response.send_message()
 
 
-@bot.tree.command(name="searchcf")
+@bot.tree.command(name="searchcf",  description = "找某個人的Codeforces資訊")
 async def searchcf(interaction: discord.Interaction, cfhandle: str):
     data = get_user_info(cfhandle)  
     await interaction.response.send_message(embed=data)
     
-@bot.tree.command(name="help")
+@bot.tree.command(name="help",  description = "列出所有指令")
 async def cnttocf(interaction: discord.Interaction):
-    des={help : "指令列表\n mobai <使用者> : 膜拜<使用者> \n searchcf <Codeforces帳號> : 搜尋Codeforces帳號資訊\n cnttocf <Codeforces帳號> : 將Discord帳號與Codeforces帳號連結(需用vercf驗證) \n vercf : 驗證連結Codeforces帳號"}
+    des={help : "指令列表\n mobai <使用者> : 膜拜<使用者> \n searchcf <Codeforces帳號> : 搜尋Codeforces帳號資訊\n cnttocf <Codeforces帳號> : 將Discord帳號與Codeforces帳號連結(需用vercf驗證) \n vercf : 驗證連結Codeforces帳號 \n [回報問題](https://forms.gle/ydRRtghMKkZPA975A) : https://forms.gle/ydRRtghMKkZPA975A"}
     embed=discord.Embed(title="**指令列表**", description=des)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="cnttocf")
+@bot.tree.command(name="cnttocf",  description = "將Discord帳號與Codeforces帳號連結 (需用vercf驗證)")
 async def cnttocf(interaction: discord.Interaction, cfhandle: str):
     data = linkcf.askforcf(interaction.user.name, cfhandle)
     await interaction.response.send_message(data+ "\nUse vercf command to verify your account after submitting code to the specified problem.", ephemeral=True  )
 
-@bot.tree.command(name="vercf")
+@bot.tree.command(name="vercf",  description = "驗證連結Codeforces帳號")
 async def vercf(interaction: discord.Interaction):
     data = linkcf.vertifycf(interaction.user.name)
     await interaction.response.send_message(data, ephemeral=True)
     
-@bot.tree.command(name="ratingcf")
+@bot.tree.command(name="ratingcf", description = "顯示Codeforces帳號的Rating變化圖")
 async def ratingcf(interaction: discord.Interaction, cfhandle: str):
     await interaction.response.defer()
     data = cfrating.rating(cfhandle)
+    embed = discord.Embed()
+    embed.set_author(name=f"Rating of {cfhandle}", url=f"https://codeforces.com/profile/{cfhandle}")
+    embed.set_footer(text="Required by " + interaction.user.name, icon_url=interaction.user.avatar.url)
+    embed.set_image(url=f"attachment://{cfhandle}_rating.png")
     if isinstance(data, str):
         await interaction.followup.send(data)
     else:
-        await interaction.followup.send(file=data)
+        await interaction.followup.send(file=data, embed=embed)
     
-@bot.tree.command(name="cfprob")
-async def cfprob(interaction: discord.Interaction, mnrating : int, mxrating : int, howmany : int):
+@bot.tree.command(name="cfprob", description = "找<=50個CF題目，如果未連結帳號不能使用solved選項(一樣可能會有你寫過的題目)")
+async def cfprob(interaction: discord.Interaction, mnrating : int, mxrating : int, howmany : int, show_solved : bool):
     await interaction.response.defer()
+    txt ="" 
+    if linkcf.linked(interaction.user.name) == False and show_solved == False:
+        txt="DC !link to CF，so it will come up with problems you have solved yet. Try link to CF, If u dont wnat to show the solved problems."
+        show_solved = False
     data = throwcf.askprob(
         mnrating,
         mxrating,
-        howmany
+        howmany,
+        show_solved, 
+        txt
     )
     if isinstance(data, str):
         await interaction.followup.send(embed=data)

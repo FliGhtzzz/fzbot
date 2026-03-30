@@ -6,6 +6,13 @@ file = open("link.json", "r")
 link_data = json.load(file)
 file.close()
 
+def linked(dcname):
+    for i in link_data:
+        if link_data[i]["dcname"] == dcname and link_data[i]["linked"] == True:
+            return link_data[i]["codeforces.handle"]
+    return False
+
+
 def askforcf(dcname, cfhandle):
 
     url = "https://codeforces.com/api/user.info"
