@@ -50,7 +50,7 @@ def vertifycf(dcname):
     
     for i in link_data:
         if link_data[i]["dcname"] == dcname and link_data[i]["linked"] == False:
-            url = "https://codeforces.com/api/user.status?handle=" + link_data[i]["codeforces.handle"] + "&from=1&count=10"
+            url = "https://codeforces.com/api/user.status?handle=" + link_data[i]["codeforces.handle"] + "&from=1&count=100"
             try:
                 response = requests.get(url)
                 data = response.json()
