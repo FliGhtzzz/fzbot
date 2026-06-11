@@ -1,5 +1,38 @@
-test.py
+# Environment variables (private)
+.env
+
+# Config files with secrets
 secret.json
-__pycache__/
+
+# Runtime data files
+duel_data.json
+leaderboard.json
 link.json
+role_reactions.json
+role_selects.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.pdb
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Generated images
+*.png
+
+# Virtual environment
 testenv/
+venv/
+.venv/
+
+# Test files
+test.py
+
+# OS
+.DS_Store
+Thumbs.db

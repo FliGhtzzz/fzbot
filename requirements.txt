@@ -1,0 +1,5 @@
+discord.py>=2.0
+python-dotenv
+requests
+matplotlib
+openai>=1.0
