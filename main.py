@@ -22,15 +22,24 @@ intents = discord.Intents.all()
 # command_prefix是前綴符號，可以自由選擇($, #, &...)
 bot = commands.Bot(command_prefix="%", intents=intents)
 
+# 機器人完全就緒鎖（防止 startup 期間收到指令導致 404）
+_startup_complete = False
+
 
 # ============================================================
 # 事件：機器人啟動
 # ============================================================
 @bot.event
 async def on_ready():
-    slash = await bot.tree.sync()
+    # 第一步：立刻同步 slash commands（完全就緒後才接受任何指令）
+    synced = await bot.tree.sync()
+    global _startup_complete
+    _startup_complete = True  # 解鎖指令處理
     print(f"目前登入身份 --> {bot.user}")
-    print(f"載入 {len(slash)} 個斜線指令")
+    print(f"載入 {len(synced)} 個斜線指令")
+
+    # 初始化 link.json 初始化的同時不阻斷 sync
+    FILENAME = "link.json"
     # 初始化 link.json
     FILENAME = "link.json"
     if not os.path.exists(FILENAME) or os.path.getsize(FILENAME) == 0:
@@ -801,6 +810,25 @@ async def ai(interaction: discord.Interaction, question: str):
 @bot.tree.command(name="summarize", description="📝 用 AI 總結頻道最近的聊天記錄")
 async def summarize(interaction: discord.Interaction):
     """用 AI 總結頻道最近的聊天記錄"""
+
+    # 安全閘：確保開機完全就緒，避免 404 Unknown interaction
+    if not _startup_complete:
+        await interaction.response.send_message(
+            "⚠️ 機器人正在啟動中，請稍等幾秒後再試", ephemeral=True
+        )
+        return
+
+    # User Install 檢查：guild_id 為 None 表示在 DM 環境
+    # Bot 沒有辦法在未加入的伺服器讀取頻道歷史
+    if interaction.guild_id is None:
+        await interaction.response.send_message(
+            "⚠️ 此指令需要在伺服器頻道中使用，且 Bot 必須已加入該伺服器並拥有「讀取訊息歷史」權限。\n"
+            "❗目前無法使用 App 方法（User Install）跨伺服器讀取，因為 Bot 需要在目標頻道有權限。\n\n"
+            "💡 解法：將 Bot 邀請到您想總結的伺服器，並給予讀取訊息歷史權限後再使用。",
+            ephemeral=True
+        )
+        return
+
     await interaction.response.defer(ephemeral=True)
 
     channel = interaction.channel
@@ -879,6 +907,29 @@ async def do_summarize(interaction: discord.Interaction, time_seconds: int):
     time_display = format_time_display(time_seconds)
 
     try:
+        # 主動權限檢查（不必等到 API 回 403 才發現）
+        if isinstance(channel, discord.TextChannel):
+            permissions = channel.permissions_for(channel.guild.me)
+            if not permissions.read_message_history:
+                await interaction.edit_original_response(
+                    embed=discord.Embed(
+                        title="❌ 權限不足",
+                        description="⚠️ Bot 需要「讀取訊息歷史」權限才能使用此功能\n"
+                                    "請前往 Discord 伺服器設定 → 頻道權限 → 為 Bot 角色開啟「讀取訊息歷史」",
+                        color=0xff0000
+                    )
+                )
+                return
+            if not permissions.send_messages:
+                await interaction.edit_original_response(
+                    embed=discord.Embed(
+                        title="❌ 權限不足",
+                        description="⚠️ Bot 需要「發送訊息」權限",
+                        color=0xff0000
+                    )
+                )
+                return
+
         cutoff_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=time_seconds)
 
         # 取得頻道歷史訊息
