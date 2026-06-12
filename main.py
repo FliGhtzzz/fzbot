@@ -61,6 +61,8 @@ async def on_ready():
     bot.loop.create_task(check_expired_verifications())
     # 啟動 pending duel 過期檢查 task
     bot.loop.create_task(check_expired_pending_duels())
+    # 啟動狀態輪播 task
+    bot.loop.create_task(status_cycle_loop())
 
 
 async def check_expired_verifications():
@@ -192,6 +194,31 @@ async def duel_check_loop():
         except Exception as e:
             print(f"[duel check error] {e}")
         await asyncio.sleep(30)
+
+
+# ============================================================
+# 背景任務：狀態輪播
+# ============================================================
+VERDICT_STATUSES = ["AC ✅", "TLE ⏱️", "RE 💥", "CE 📄", "WA ❌", "喔喔喔愛 💕"]
+
+async def status_cycle_loop():
+    """每 10 秒更換一次 Discord 狀態訊息"""
+    await bot.wait_until_ready()
+    print("[bot] 狀態輪播已啟動")
+    index = 0
+    while True:
+        try:
+            status = VERDICT_STATUSES[index % len(VERDICT_STATUSES)]
+            await bot.change_presence(
+                activity=discord.Activity(
+                    type=discord.ActivityType.playing,
+                    name=status
+                )
+            )
+            index += 1
+        except Exception as e:
+            print(f"[status_cycle] 更新失敗: {e}")
+        await asyncio.sleep(10)
 
 
 async def check_and_finalize_duels():
