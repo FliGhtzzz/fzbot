@@ -827,8 +827,7 @@ async def summarize(interaction: discord.Interaction):
                 discord.SelectOption(label="最近 6 小時", value="6h", emoji="🕓"),
                 discord.SelectOption(label="最近 12 小時", value="12h", emoji="🕛"),
                 discord.SelectOption(label="最近 1 天", value="1d", emoji="📅"),
-                discord.SelectOption(label="最近 3 天", value="3d", emoji="📅"),
-                discord.SelectOption(label="最近 7 天", value="7d", emoji="📅"),
+                discord.SelectOption(label="最近 2 天", value="2d", emoji="📅"),
             ],
             min_values=1,
             max_values=1,
@@ -850,7 +849,7 @@ async def summarize(interaction: discord.Interaction):
             embed = discord.Embed(
                 title="🔄 AI 正在分析訊息...",
                 description=f"📊 時間範圍：最近 **{format_time_display(time_seconds)}**\n"
-                            f"⏳ 正在讀取頻道訊息並生成摘要\n"
+                            f"⏳ 正在讀取頻道訊息並生成摘要（最多讀取 **2000 筆**）\n"
                             f"請稍候...",
                 color=0x3489da
             )
@@ -884,7 +883,7 @@ async def do_summarize(interaction: discord.Interaction, time_seconds: int):
 
         # 取得頻道歷史訊息
         messages = []
-        async for message in channel.history(after=cutoff_time, limit=200):
+        async for message in channel.history(after=cutoff_time, limit=2000):
             if message.content and not message.content.strip().startswith('?'):
                 messages.append({
                     "author": message.author.name,
