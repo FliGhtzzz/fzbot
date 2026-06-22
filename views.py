@@ -1815,53 +1815,110 @@ class FoodResultView(ui.View):
         self.current_page = page
         self.per_page = 5
 
-    def _build_summary_embed(self) -> discord.Embed:
-        """建立分類統計圖表"""
-        # 統計各類型數量
-        category_stats = {
-            "restaurant": {"count": 0, "emoji": "🍽️", "name": "餐廳"},
-            "fast_food": {"count": 0, "emoji": "🍔", "name": "速食"},
-            "cafe": {"count": 0, "emoji": "☕", "name": "咖啡廳"},
-            "bar": {"count": 0, "emoji": "🍺", "name": "酒吧"},
-            "bakery": {"count": 0, "emoji": "🥐", "name": "麵包店"},
-        }
+    @ui.button(label="🗺️ 查看地圖", style=discord.ButtonStyle.primary, row=0)
+    async def show_map(self, interaction: discord.Interaction, button: ui.Button):
+        """顯示所有餐廳的地圖"""
+        import food as food_mod
 
-        for place in self.places:
-            a = place.get("amenity", "")
-            if a in category_stats:
-                category_stats[a]["count"] += 1
+        # 顯示載入中
+        await interaction.response.defer()
 
-        # 建立長條圖
-        total = len(self.places)
-        max_count = max(c["count"] for c in category_stats.values()) if category_stats else 1
+        # 生成地圖
+        map_buf = food_mod.generate_food_map_simple(self.places)
 
-        chart_lines = []
-        for key, data in category_stats.items():
-            count = data["count"]
-            if count > 0:
-                # 長條圖（每個 █ 代表 1 間）
-                bar = "█" * min(count, 20)
-                chart_lines.append(f"{data['emoji']} {data['name']}: {bar} `{count}`")
+        if map_buf:
+            short_name = self.location_info['display_name'].split(',')[0] if ',' in self.location_info['display_name'] else self.location_info['display_name']
+            embed = discord.Embed(
+                title=f"🗺️ {short_name} 附近美食地圖",
+                description=f"📍 搜尋範圍：{self.location_info['display_name']}\n"
+                            f"🔍 共找到 **{len(self.places)}** 間餐廳\n\n"
+                            f"📌 圖例：🍽️餐廳 | 🍔速食 | ☕咖啡 | 🍺酒吧 | 🥐麵包",
+                color=0xFF6B35
+            )
 
+            # 發送圖片
+            file = discord.File(map_buf, filename="food_map.png")
+            embed.set_image(url="attachment://food_map.png")
+            embed.set_footer(text=f"由 {self.user.name} 請求")
+
+            await interaction.followup.send(embed=embed, file=file)
+        else:
+            await interaction.followup.send("⚠️ 無法生成地圖，請確認 matplotlib 已安裝", ephemeral=True)
+
+    @ui.button(label="🎲 隨機選擇", style=discord.ButtonStyle.success, row=0)
+    async def random_pick(self, interaction: discord.Interaction, button: ui.Button):
+        import food as food_mod
+
+        if not self.places:
+            await interaction.response.send_message("⚠️ 沒有可選擇的餐廳", ephemeral=True)
+            return
+
+        # 隨機選擇
+        import random
+        picked_idx = random.randint(0, len(self.places) - 1)
+        picked = self.places[picked_idx]
+        url = food_mod.get_openstreetmap_url(picked["lat"], picked["lon"])
+
+        # 取得類型 emoji
+        amenity_emoji = {
+            "restaurant": "🍽️",
+            "fast_food": "🍔",
+            "cafe": "☕",
+            "bar": "🍺",
+            "bakery": "🥐"
+        }.get(picked.get("amenity", ""), "🍴")
+
+        # 生成有標記的地圖
+        await interaction.response.defer()
+
+        map_buf = food_mod.generate_food_map_simple(self.places, selected_idx=picked_idx)
+
+        # 建立結果 embed
         embed = discord.Embed(
-            title=f"🍜 附近美食統計 ({total} 間)",
-            description=(
-                f"📍 **搜尋地點：** {self.location_info['display_name']}\n\n"
-                f"**📊 分類統計：**\n" + "\n".join(chart_lines)
-            ) if chart_lines else f"📍 {self.location_info['display_name']}\n\n找不到餐廳",
+            title=f"{amenity_emoji} 今日吃这个！",
+            description=f"**🎉 恭喜抽中：{picked['name']}**\n\n"
+                        f"{picked['type']}\n"
+                        f"📍 地址：{picked['address']}",
             color=0xFF6B35
         )
 
-        embed.set_footer(text="💡 點「📋 分類列表」查看所有餐廳")
+        # 添加 cuisine 資訊
+        if picked.get("cuisine"):
+            cuisine_list = picked["cuisine"].replace(",", "、")
+            embed.add_field(name="🍳 美食類型", value=cuisine_list, inline=False)
 
-        return embed
+        embed.add_field(
+            name="🗺️ 地圖連結",
+            value=f"[點我查看位置]({url})",
+            inline=False
+        )
 
-    @ui.button(label="📊 統計圖表", style=discord.ButtonStyle.secondary, row=0)
-    async def show_stats(self, interaction: discord.Interaction, button: ui.Button):
-        embed = self._build_summary_embed()
-        await interaction.response.edit_message(embed=embed, view=self)
+        # 如果有 tags 中的其他資訊
+        tags = picked.get("tags", {})
+        extras = []
+        if tags.get("opening_hours"):
+            extras.append(f"🕐 營業時間：{tags['opening_hours']}")
+        if tags.get("phone"):
+            extras.append(f"📞 電話：{tags['phone']}")
+        if tags.get("wheelchair") == "yes":
+            extras.append("♿ 有無障礙設施")
 
-    @ui.button(label="📋 分類列表", style=discord.ButtonStyle.secondary, row=0)
+        if extras:
+            embed.add_field(name="📋 詳細資訊", value="\n".join(extras), inline=False)
+
+        embed.set_footer(
+            text=f"由 {self.user.name} 抽中 🎲 | 共 {len(self.places)} 間餐廳可選",
+            icon_url=self.user.avatar.url if self.user.avatar else None
+        )
+
+        # 發送圖片和embed
+        if map_buf:
+            file = discord.File(map_buf, filename="food_map_selected.png")
+            embed.set_image(url="attachment://food_map_selected.png")
+
+        await interaction.followup.send(embed=embed, file=file if map_buf else None)
+
+    @ui.button(label="📋 分類列表", style=discord.ButtonStyle.secondary, row=1)
     async def show_list(self, interaction: discord.Interaction, button: ui.Button):
         """顯示分類後的完整列表"""
         import food as food_mod
@@ -1934,66 +1991,6 @@ class FoodResultView(ui.View):
                     await interaction.channel.send(embed=embed)
         else:
             await interaction.response.send_message("⚠️ 沒有找到餐廳", ephemeral=True)
-
-    @ui.button(label="🎲 隨機選擇一個！", style=discord.ButtonStyle.success, row=1)
-    async def random_pick(self, interaction: discord.Interaction, button: ui.Button):
-        import food as food_mod
-
-        if not self.places:
-            await interaction.response.send_message("⚠️ 沒有可選擇的餐廳", ephemeral=True)
-            return
-
-        # 隨機選擇
-        picked = food_mod.pick_random_food(self.places)
-        url = food_mod.get_openstreetmap_url(picked["lat"], picked["lon"])
-
-        # 取得類型 emoji
-        amenity_emoji = {
-            "restaurant": "🍽️",
-            "fast_food": "🍔",
-            "cafe": "☕",
-            "bar": "🍺",
-            "bakery": "🥐"
-        }.get(picked.get("amenity", ""), "🍴")
-
-        embed = discord.Embed(
-            title=f"{amenity_emoji} 今日吃这个！",
-            description=f"**🎉 恭喜抽中：{picked['name']}**\n\n"
-                        f"{picked['type']}\n"
-                        f"📍 地址：{picked['address']}",
-            color=0xFF6B35
-        )
-
-        # 添加 cuisine 資訊
-        if picked.get("cuisine"):
-            cuisine_list = picked["cuisine"].replace(",", "、")
-            embed.add_field(name="🍳 美食類型", value=cuisine_list, inline=False)
-
-        embed.add_field(
-            name="🗺️ 地圖",
-            value=f"[點我查看位置]({url})",
-            inline=False
-        )
-
-        # 如果有 tags 中的其他資訊
-        tags = picked.get("tags", {})
-        extras = []
-        if tags.get("opening_hours"):
-            extras.append(f"🕐 營業時間：{tags['opening_hours']}")
-        if tags.get("phone"):
-            extras.append(f"📞 電話：{tags['phone']}")
-        if tags.get("wheelchair") == "yes":
-            extras.append("♿ 有無障礙設施")
-
-        if extras:
-            embed.add_field(name="📋 詳細資訊", value="\n".join(extras), inline=False)
-
-        embed.set_footer(
-            text=f"由 {self.user.name} 抽中 🎲 | 共 {len(self.places)} 間餐廳可選",
-            icon_url=self.user.avatar.url if self.user.avatar else None
-        )
-
-        await interaction.response.send_message(embed=embed)
 
     @ui.button(label="🔄 重新搜尋", style=discord.ButtonStyle.danger, row=2)
     async def re_search(self, interaction: discord.Interaction, button: ui.Button):
