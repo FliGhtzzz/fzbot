@@ -416,6 +416,7 @@ async def help_cmd(interaction: discord.Interaction):
         "roleselect_admin": "建立/管理身份組選單（管理員）🔧",
         "ai <question>": "問 AI 問題 🤖",
         "summarize": "用 AI 總結頻道訊息（選單選擇時間）📝",
+        "food": "搜尋附近美食並隨機選擇 🍜",
     }
     embed = discord.Embed(
         title="**指令列表**",
@@ -831,9 +832,6 @@ async def ai(interaction: discord.Interaction, question: str):
         )
 
 
-# ============================================================
-# 指令：訊息總結
-# ============================================================
 @bot.tree.command(name="summarize", description="📝 用 AI 總結頻道最近的聊天記錄")
 async def summarize(interaction: discord.Interaction):
     """用 AI 總結頻道最近的聊天記錄"""
@@ -1138,6 +1136,29 @@ def format_time_display(seconds: int) -> str:
         return f"{mins} 分鐘"
     else:
         return f"{seconds} 秒"
+
+
+# ============================================================
+# 指令：美食搜尋
+# ============================================================
+@bot.tree.command(name="food", description="🍜 搜尋附近美食並隨機選擇吃什麼")
+async def food_search(interaction: discord.Interaction):
+    """搜尋附近美食，支援隨機選擇"""
+    embed = discord.Embed(
+        title="🍜 搜尋附近美食",
+        description="1️⃣ 從下方選擇搜尋範圍（可選）\n"
+                    "2️⃣ 點「🔍 搜尋附近美食」輸入地點\n"
+                    "3️⃣ 搜到結果後點「🎲 隨機選擇」決定吃什麼！\n\n"
+                    "💡 **支援搜尋：**\n"
+                    "• 城市名（台北市、高雄市）\n"
+                    "• 地標（新竹科學園區、信義區）\n"
+                    "• 地址（中央路一段100號）",
+        color=0xFF6B35
+    )
+    embed.set_footer(text="💡 提示：輸入越精確的地點，結果越準確")
+
+    view = views.FoodSearchView(interaction.user, bot)
+    await interaction.response.send_message(embed=embed, view=view)
 
 
 # ============================================================

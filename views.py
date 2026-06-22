@@ -1697,3 +1697,245 @@ class TempSelectView(ui.View):
             await interaction.response.send_message("\n".join(results), ephemeral=True)
         else:
             await interaction.response.defer()
+
+
+# ============================================================
+# 美食搜尋 UI
+# ============================================================
+
+class FoodLocationModal(ui.Modal, title="輸入地點"):
+    """輸入要搜尋的地點"""
+    location = ui.TextInput(
+        label="地點",
+        placeholder="例如：台北市、新竹科學園區",
+        required=True,
+        max_length=100
+    )
+
+    def __init__(self, parent_view):
+        super().__init__()
+        self.parent_view = parent_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        import food as food_mod
+        await interaction.response.defer()
+
+        loading_embed = discord.Embed(
+            title="🍜 搜尋美食中...",
+            description=f"📍 正在搜尋「{self.location.value}」附近美食\n"
+                        f"⏱️ 半徑：{self.parent_view.radius} 公尺\n"
+                        f"請稍候...",
+            color=0x3489da
+        )
+        loading_msg = await interaction.followup.send(embed=loading_embed, wait=True)
+
+        result = food_mod.search_food_by_location(self.location.value, radius=self.parent_view.radius, limit=50)
+
+        if not result["success"]:
+            await loading_msg.edit(
+                embed=discord.Embed(
+                    title="❌ 搜尋失敗",
+                    description=result.get("error", "未知錯誤"),
+                    color=0x903c3c
+                )
+            )
+            return
+
+        self.parent_view.location = self.location.value
+        self.parent_view.places = result["places"]
+        self.parent_view.location_info = result["location_info"]
+        self.parent_view.current_page = 0
+
+        if not self.parent_view.places:
+            await loading_msg.edit(
+                embed=discord.Embed(
+                    title="🍜 搜尋結果",
+                    description=f"📍 **「{self.parent_view.location_info['display_name']}」** 附近找不到餐廳\n\n"
+                                f"💡 建議：嘗試更大的搜尋範圍或不同的地點",
+                    color=0x808080
+                )
+            )
+            return
+
+        result_embed = await self.parent_view._build_results_embed()
+        new_view = FoodResultView(self.parent_view.places, self.parent_view.user, self.parent_view.location_info, 0)
+        await loading_msg.edit(embed=result_embed, view=new_view)
+
+
+class FoodSearchView(ui.View):
+    """美食搜尋視圖"""
+
+    def __init__(self, user: discord.User, bot: discord.Client = None):
+        super().__init__(timeout=300)
+        self.user = user
+        self.bot = bot
+        self.location = ""
+        self.radius = 1000
+        self.places = []
+        self.location_info = None
+        self.current_page = 0
+
+    @ui.button(label="🔍 搜尋附近美食", style=discord.ButtonStyle.primary, row=0)
+    async def search(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = FoodLocationModal(self)
+        await interaction.response.send_modal(modal)
+
+    @ui.select(
+        placeholder="選擇搜尋範圍",
+        options=[
+            discord.SelectOption(label="🚶 500m（很近）", value="500", emoji="🚶"),
+            discord.SelectOption(label="🏃 1km（適中）", value="1000", emoji="🏃", default=True),
+            discord.SelectOption(label="🚗 2km（較遠）", value="2000", emoji="🚗"),
+            discord.SelectOption(label="🚀 3km（很遠）", value="3000", emoji="🚀"),
+        ],
+        row=1
+    )
+    async def radius_select(self, interaction: discord.Interaction, select: ui.Select):
+        self.radius = int(select.values[0])
+        await interaction.response.defer()
+        await interaction.followup.send(f"✅ 已設定搜尋範圍：{self.radius} 公尺", ephemeral=True)
+
+    async def _build_results_embed(self) -> discord.Embed:
+        return discord.Embed(
+            title="🍜 附近美食搜尋結果",
+            description=f"📍 **搜尋地點：** {self.location_info['display_name']}\n"
+                        f"🔍 找到 **{len(self.places)}** 間餐廳 · 半徑 {self.radius}m",
+            color=0xFF6B35
+        )
+
+
+class FoodResultView(ui.View):
+    """美食搜尋結果視圖"""
+
+    def __init__(self, places: list, user: discord.User, location_info: dict, page: int = 0):
+        super().__init__(timeout=300)
+        self.places = places
+        self.user = user
+        self.location_info = location_info
+        self.current_page = page
+        self.per_page = 5
+
+    @ui.button(label="🎲 隨機選擇一個！", style=discord.ButtonStyle.success, row=0)
+    async def random_pick(self, interaction: discord.Interaction, button: ui.Button):
+        import food as food_mod
+
+        if not self.places:
+            await interaction.response.send_message("⚠️ 沒有可選擇的餐廳", ephemeral=True)
+            return
+
+        # 隨機選擇
+        picked = food_mod.pick_random_food(self.places)
+        url = food_mod.get_openstreetmap_url(picked["lat"], picked["lon"])
+
+        # 取得類型 emoji
+        amenity_emoji = {
+            "restaurant": "🍽️",
+            "fast_food": "🍔",
+            "cafe": "☕",
+            "bar": "🍺",
+            "bakery": "🥐"
+        }.get(picked.get("amenity", ""), "🍴")
+
+        embed = discord.Embed(
+            title=f"{amenity_emoji} 今日吃这个！",
+            description=f"**🎉 恭喜抽中：{picked['name']}**\n\n"
+                        f"{picked['type']}\n"
+                        f"📍 地址：{picked['address']}",
+            color=0xFF6B35
+        )
+
+        # 添加 cuisine 資訊
+        if picked.get("cuisine"):
+            cuisine_list = picked["cuisine"].replace(",", "、")
+            embed.add_field(name="🍳 美食類型", value=cuisine_list, inline=False)
+
+        embed.add_field(
+            name="🗺️ 地圖",
+            value=f"[點我查看位置]({url})",
+            inline=False
+        )
+
+        # 如果有 tags 中的其他資訊
+        tags = picked.get("tags", {})
+        extras = []
+        if tags.get("opening_hours"):
+            extras.append(f"🕐 營業時間：{tags['opening_hours']}")
+        if tags.get("phone"):
+            extras.append(f"📞 電話：{tags['phone']}")
+        if tags.get("wheelchair") == "yes":
+            extras.append("♿ 有無障礙設施")
+
+        if extras:
+            embed.add_field(name="📋 詳細資訊", value="\n".join(extras), inline=False)
+
+        embed.set_footer(
+            text=f"由 {self.user.name} 抽中 🎲 | 共 {len(self.places)} 間餐廳可選",
+            icon_url=self.user.avatar.url if self.user.avatar else None
+        )
+
+        await interaction.response.send_message(embed=embed)
+
+    @ui.button(label="⬅️ 上一頁", style=discord.ButtonStyle.secondary, row=1)
+    async def prev_page(self, interaction: discord.Interaction, button: ui.Button):
+        if self.current_page > 0:
+            self.current_page -= 1
+            await interaction.response.edit_message(view=self)
+        else:
+            await interaction.response.defer()
+
+    @ui.button(label="➡️ 下一頁", style=discord.ButtonStyle.secondary, row=1)
+    async def next_page(self, interaction: discord.Interaction, button: ui.Button):
+        max_page = max(0, (len(self.places) - 1) // self.per_page)
+        if self.current_page < max_page:
+            self.current_page += 1
+            await interaction.response.edit_message(view=self)
+        else:
+            await interaction.response.defer()
+
+    @ui.button(label="🔄 重新搜尋", style=discord.ButtonStyle.danger, row=2)
+    async def re_search(self, interaction: discord.Interaction, button: ui.Button):
+        new_view = FoodSearchView(self.user)
+        new_embed = discord.Embed(
+            title="🍜 搜尋附近美食",
+            description="1️⃣ 選擇搜尋範圍\n2️⃣ 點「🔍 搜尋附近美食」輸入地點\n3️⃣ 搜到後點「🎲 隨機選擇」吃什麼！",
+            color=0xFF6B35
+        )
+        new_embed.set_footer(text="💡 提示：可以輸入地標、地址或城市名稱")
+        await interaction.response.edit_message(embed=new_embed, view=new_view)
+
+
+def build_food_results_embed(places: list, page: int, per_page: int, location_info: dict) -> discord.Embed:
+    """建立美食結果列表 embed"""
+    start = page * per_page
+    end = min(start + per_page, len(places))
+    max_page = max(1, (len(places) - 1) // per_page + 1) if places else 1
+
+    lines = []
+    for i, place in enumerate(places[start:end], start + 1):
+        amenity_emoji = {
+            "restaurant": "🍽️",
+            "fast_food": "🍔",
+            "cafe": "☕",
+            "bar": "🍺",
+            "bakery": "🥐",
+            "": "🍴"
+        }.get(place.get("amenity", ""), "🍴")
+
+        name = place["name"]
+        addr = place["address"]
+        food_type = place["type"]
+
+        lines.append(
+            f"**{i}. {amenity_emoji} {name}**\n"
+            f"　　{food_type} · 📍 {addr}"
+        )
+
+    embed = discord.Embed(
+        title="🍜 附近美食列表",
+        description="\n\n".join(lines) if lines else "找不到餐廳",
+        color=0xFF6B35
+    )
+    embed.set_footer(text=f"第 {page + 1} / {max_page} 頁 · 共 {len(places)} 間")
+    embed.set_author(name=f"📍 {location_info.get('display_name', '未知地點')}")
+
+    return embed
