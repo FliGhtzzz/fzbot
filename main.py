@@ -1,3 +1,4 @@
+from data_paths import data_path
 # 導入Discord.py模組
 import discord
 import os
@@ -18,12 +19,15 @@ load_dotenv()
 dctoken = os.getenv("DC_TOKEN")
 
 # intents是要求機器人的權限
-intents = discord.Intents.all()
+intents = discord.Intents.default()
+intents.members = True
+intents.message_content = True
 # command_prefix是前綴符號，可以自由選擇($, #, &...)
 bot = commands.Bot(command_prefix="%", intents=intents)
 
 # 機器人完全就緒鎖（防止 startup 期間收到指令導致 404）
 _startup_complete = False
+_background_tasks = {}
 
 
 # ============================================================
@@ -38,31 +42,28 @@ async def on_ready():
     print(f"目前登入身份 --> {bot.user}")
     print(f"載入 {len(synced)} 個斜線指令")
 
-    # 初始化 link.json 初始化的同時不阻斷 sync
-    FILENAME = "link.json"
-    # 初始化 link.json
-    FILENAME = "link.json"
+    # 初始化持久化資料
+    FILENAME = data_path("link.json")
     if not os.path.exists(FILENAME) or os.path.getsize(FILENAME) == 0:
         with open(FILENAME, "w") as f:
             json.dump({}, f, indent=4)
     # 初始化 role_reactions.json
-    RRFILE = "role_reactions.json"
+    RRFILE = data_path("role_reactions.json")
     if not os.path.exists(RRFILE):
         with open(RRFILE, "w") as f:
             json.dump({"menus": {}}, f, ensure_ascii=False, indent=2)
     # 初始化 role_selects.json
-    RSFILE = "role_selects.json"
+    RSFILE = data_path("role_selects.json")
     if not os.path.exists(RSFILE):
         with open(RSFILE, "w") as f:
             json.dump({"menus": {}}, f, ensure_ascii=False, indent=2)
-    # 啟動 duel 結算 background task
-    bot.loop.create_task(duel_check_loop())
-    # 啟動驗證超時檢查 task
-    bot.loop.create_task(check_expired_verifications())
-    # 啟動 pending duel 過期檢查 task
-    bot.loop.create_task(check_expired_pending_duels())
-    # 啟動狀態輪播 task
-    bot.loop.create_task(status_cycle_loop())
+    # Reconnects can trigger on_ready again; retain one instance of each task.
+    for task_fn in (duel_check_loop, check_expired_verifications,
+                    check_expired_pending_duels, status_cycle_loop):
+        task = _background_tasks.get(task_fn.__name__)
+        if task is None or task.done():
+            _background_tasks[task_fn.__name__] = asyncio.create_task(task_fn())
+
 
 
 async def check_expired_verifications():
@@ -1249,4 +1250,6 @@ async def roleselect_admin(interaction: discord.Interaction):
 # 啟動
 # ============================================================
 if __name__ == "__main__":
+    if not dctoken or dctoken == "your_discord_bot_token_here":
+        raise SystemExit("請在 .env 設定有效的 DC_TOKEN，再啟動 Bot。")
     bot.run(dctoken)

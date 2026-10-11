@@ -36,3 +36,11 @@ test.py
 # OS
 .DS_Store
 Thumbs.db
+
+# Local secrets and persistent storage
+.env.*
+!.env.example
+data/
+autorole_config.json
+*.log
+backups/

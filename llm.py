@@ -12,7 +12,7 @@ nvtoken = os.getenv("NV_TOKEN")
 client = AsyncOpenAI(
     base_url="https://integrate.api.nvidia.com/v1",
     api_key=nvtoken
-)
+) if nvtoken and nvtoken != "your_nvidia_token_here" else None
 
 # RPM 限流：每分鐘最多 40 個請求
 class RateLimiter:
@@ -59,6 +59,8 @@ async def call_llm_api(question: str, use_rate_limit: bool = True, max_tokens: i
     Returns:
         LLM 的回覆文字，或錯誤訊息
     """
+    if client is None:
+        return "AI 功能尚未設定，請設定 NV_TOKEN。"
     try:
         # 先取得 rate limit許可
         if use_rate_limit:

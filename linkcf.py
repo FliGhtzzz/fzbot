@@ -1,3 +1,4 @@
+from data_paths import data_path
 import json
 import random
 import requests
@@ -10,17 +11,17 @@ VERIFICATION_TIME_LIMIT = 120  # 2 分鐘（秒）
 def _load_link_data():
     """載入連結資料"""
     try:
-        with open("link.json", "r") as f:
+        with open(data_path("link.json"), "r") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        with open("link.json", "w") as f:
+        with open(data_path("link.json"), "w") as f:
             json.dump({}, f, indent=4)
         return {}
 
 
 def _save_link_data(data):
     """儲存連結資料"""
-    with open("link.json", "w") as f:
+    with open(data_path("link.json"), "w") as f:
         json.dump(data, f, indent=4)
 
 

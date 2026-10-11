@@ -2,13 +2,14 @@
 Duel 系統：兩位使用者 PK 解題數量與速度
 Bot 主動查 CF API 判斷誰先 AC
 """
+from data_paths import data_path
 import os
 import time
 import requests
 import json
 import throwcf
 
-DUEL_FILE = "duel_data.json"
+DUEL_FILE = data_path("duel_data.json")
 
 
 def _load_duel():
@@ -228,7 +229,7 @@ def update_leaderboard(winner_dc: str, winner_cf: str,
                        loser_dc: str, loser_cf: str,
                        is_tie: bool, duel_info: dict):
     """更新 leaderboard.json"""
-    lb_file = "leaderboard.json"
+    lb_file = data_path("leaderboard.json")
     if not os.path.exists(lb_file):
         with open(lb_file, "w") as f:
             json.dump({}, f)
@@ -265,7 +266,7 @@ def update_leaderboard(winner_dc: str, winner_cf: str,
 
 def get_leaderboard() -> list:
     """取得排序過的 leaderboard"""
-    lb_file = "leaderboard.json"
+    lb_file = data_path("leaderboard.json")
     if not os.path.exists(lb_file):
         return []
     with open(lb_file, "r") as f:
@@ -294,7 +295,7 @@ def get_leaderboard() -> list:
 
 def get_user_stats(dc_name: str) -> dict | None:
     """取得特定用戶的 duel 統計"""
-    lb_file = "leaderboard.json"
+    lb_file = data_path("leaderboard.json")
     if not os.path.exists(lb_file):
         return None
     with open(lb_file, "r") as f:

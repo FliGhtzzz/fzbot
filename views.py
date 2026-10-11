@@ -1,3 +1,4 @@
+from data_paths import data_path
 import discord
 import time
 import json
@@ -191,9 +192,9 @@ TAG_NAMES = {
 
 def load_role_reactions():
     """載入角色反應設定，並將舊的 :emoji: 格式自動轉換為實際 emoji"""
-    if not os.path.exists("role_reactions.json"):
+    if not os.path.exists(data_path("role_reactions.json")):
         return {"menus": {}}
-    with open("role_reactions.json", "r", encoding="utf-8") as f:
+    with open(data_path("role_reactions.json"), "r", encoding="utf-8") as f:
         data = json.load(f)
 
     # 修補舊資料：將所有 roles_map 的 key 從 :emoji: 格式轉為實際 emoji
@@ -214,7 +215,7 @@ def load_role_reactions():
 
 def save_role_reactions(data):
     """儲存角色反應設定"""
-    with open("role_reactions.json", "w", encoding="utf-8") as f:
+    with open(data_path("role_reactions.json"), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
@@ -1172,15 +1173,15 @@ def build_duel_result_embed(duel_info: dict, result: dict) -> discord.Embed:
 
 def load_persistent_selects():
     """載入持久化身份組選單設定"""
-    if not os.path.exists("role_selects.json"):
+    if not os.path.exists(data_path("role_selects.json")):
         return {"menus": {}}
-    with open("role_selects.json", "r", encoding="utf-8") as f:
+    with open(data_path("role_selects.json"), "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def save_persistent_selects(data):
     """儲存持久化身份組選單設定"""
-    with open("role_selects.json", "w", encoding="utf-8") as f:
+    with open(data_path("role_selects.json"), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 

@@ -2,11 +2,12 @@
 Auto Role 系統：根據 CF Rating 自動分發身份組
 """
 import os
+from data_paths import data_path
 import json
 import requests
 import discord
 
-CONFIG_FILE = "autorole_config.json"
+CONFIG_FILE = data_path("autorole_config.json")
 
 # 預設 Rating 等級對應
 DEFAULT_RATING_TIERS = [
