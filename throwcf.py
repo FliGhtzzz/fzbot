@@ -1,4 +1,4 @@
-import requests
+from http_client import http_get
 import discord
 import random
 import json
@@ -67,7 +67,7 @@ def askprob(
     url = "https://codeforces.com/api/problemset.problems"
 
     try:
-        response = requests.get(url)
+        response = http_get(url)
         data = response.json()
 
         # 預先載入已解題目集合（效能優化）
@@ -75,7 +75,7 @@ def askprob(
         if cf_handle:
             try:
                 urlpro = f"https://codeforces.com/api/user.status?handle={cf_handle}&from=1&count=100"
-                responsepro = requests.get(urlpro)
+                responsepro = http_get(urlpro)
                 datapro = responsepro.json()
                 for sub in datapro.get("result", []):
                     if sub.get("verdict") == "OK":

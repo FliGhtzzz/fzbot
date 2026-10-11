@@ -1,7 +1,8 @@
 from data_paths import data_path
 import json
+import storage
 import random
-import requests
+from http_client import http_get
 import discord
 import time
 
@@ -9,20 +10,11 @@ VERIFICATION_TIME_LIMIT = 120  # 2 分鐘（秒）
 
 
 def _load_link_data():
-    """載入連結資料"""
-    try:
-        with open(data_path("link.json"), "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        with open(data_path("link.json"), "w") as f:
-            json.dump({}, f, indent=4)
-        return {}
+    return storage.read_json("link.json", {})
 
 
 def _save_link_data(data):
-    """儲存連結資料"""
-    with open(data_path("link.json"), "w") as f:
-        json.dump(data, f, indent=4)
+    storage.write_json("link.json", data)
 
 
 def _get_unsolved_problem(cfhandle: str):
@@ -31,7 +23,7 @@ def _get_unsolved_problem(cfhandle: str):
         # 取得用戶的所有 submission
         status_url = "https://codeforces.com/api/user.status"
         params = {"handle": cfhandle, "from": 1, "count": 1000}
-        response = requests.get(status_url, params=params, timeout=10)
+        response = http_get(status_url, params=params, timeout=10)
         data = response.json()
 
         if data["status"] != "OK":
@@ -46,7 +38,7 @@ def _get_unsolved_problem(cfhandle: str):
 
         # 取得題目列表
         problems_url = "https://codeforces.com/api/problemset.problems"
-        response = requests.get(problems_url, timeout=10)
+        response = http_get(problems_url, timeout=10)
         problems_data = response.json()
 
         if problems_data["status"] != "OK":
@@ -87,7 +79,7 @@ def get_user_info(handle):
     params = {"handles": handle}
 
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = http_get(url, params=params, timeout=10)
         data = response.json()
 
         if data["status"] == "OK":
@@ -141,7 +133,7 @@ def askforcf(user_id: str, user_name: str, cfhandle: str):
     url = "https://codeforces.com/api/user.info"
     params = {"handles": cfhandle}
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = http_get(url, params=params, timeout=10)
         data = response.json()
         if data["status"] != "OK":
             return f"Error: {data.get('comment', 'Unknown error')}"
@@ -185,16 +177,21 @@ def askforcf(user_id: str, user_name: str, cfhandle: str):
 
     # 7. 建立驗證請求
     expires_at = time.time() + VERIFICATION_TIME_LIMIT
-    link_data[user_id] = {
-        "user_name": user_name,
-        "linked": False,
-        "cfproblem_id": contest_id,
-        "cfproblem_index": problem_index,
-        "codeforces.handle": cfhandle,
-        "expires_at": expires_at,
-        "created_at": time.time()
-    }
-    _save_link_data(link_data)
+    with storage.lock:
+        link_data = _load_link_data()
+        entry = link_data.get(user_id, {})
+        if entry.get("linked") or entry.get("expires_at", 0) > time.time():
+            return "error: A link or verification already exists."
+        if linked_cf(cfhandle):
+            return "error: This Codeforces account is already linked."
+        link_data[user_id] = {
+            "user_name": user_name, "linked": False,
+            "cfproblem_id": contest_id, "cfproblem_index": problem_index,
+            "codeforces.handle": cfhandle, "expires_at": expires_at,
+            "created_at": time.time()
+        }
+        _save_link_data(link_data)
+
 
     return (
         f"✅ Verification created!\n\n"
@@ -222,8 +219,11 @@ def vertifycf(user_id: str, user_name: str):
     # 檢查是否過期
     expires_at = entry.get("expires_at", 0)
     if expires_at > 0 and time.time() > expires_at:
-        del link_data[user_id]
-        _save_link_data(link_data)
+        with storage.lock:
+            current = _load_link_data()
+            if current.get(user_id) == entry:
+                del current[user_id]
+                _save_link_data(current)
         return "Verification expired! Please use `/cnttocf` again."
 
     cf_handle = entry["codeforces.handle"]
@@ -233,16 +233,26 @@ def vertifycf(user_id: str, user_name: str):
     # 檢查 Codeforces 提交
     url = f"https://codeforces.com/api/user.status?handle={cf_handle}&from=1&count=100"
     try:
-        response = requests.get(url, timeout=10)
+        response = http_get(url, timeout=10)
         data = response.json()
 
         for sub in data.get("result", []):
             pid = sub.get("problem", {}).get("contestId", 0)
             idx = sub.get("problem", {}).get("index", "")
             if pid == contest_id and idx == problem_index:
-                link_data[user_id]["linked"] = True
-                link_data[user_id]["verified_at"] = time.time()
-                _save_link_data(link_data)
+                with storage.lock:
+                    current = _load_link_data()
+                    if current.get(user_id) != entry:
+                        return "Verification changed. Please try again."
+                    if time.time() > entry.get("expires_at", 0):
+                        return "Verification expired! Please use `/cnttocf` again."
+                    if linked_cf(cf_handle):
+                        return "error: This Codeforces account is already linked."
+                    if sub.get("creationTimeSeconds", 0) < int(entry.get("created_at", 0)):
+                        continue
+                    current[user_id]["linked"] = True
+                    current[user_id]["verified_at"] = time.time()
+                    _save_link_data(current)
                 return "✅ Your account has been successfully linked!"
 
         time_left = int(expires_at - time.time())
@@ -254,19 +264,17 @@ def vertifycf(user_id: str, user_name: str):
 
 def unlink(user_id: str):
     """解除連結"""
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    return loop.run_sync(lambda: _unlink_sync(user_id))
+    return _unlink_sync(user_id)
 
 
 def _unlink_sync(user_id: str):
-    link_data = _load_link_data()
-    if user_id in link_data and link_data[user_id].get("linked"):
-        del link_data[user_id]
-        _save_link_data(link_data)
-        return "Your account has been successfully unlinked!"
-    return "No linked Codeforces account found."
+    with storage.lock:
+        link_data = _load_link_data()
+        if user_id in link_data and link_data[user_id].get("linked"):
+            del link_data[user_id]
+            _save_link_data(link_data)
+            return "Your account has been successfully unlinked!"
+        return "No linked Codeforces account found."
 
 
 def get_pending_and_expired():
@@ -283,6 +291,7 @@ def get_pending_and_expired():
     return expired
 
 
+@storage.synchronized
 def cleanup_expired():
     """清理所有過期的驗證請求"""
     link_data = _load_link_data()
@@ -303,6 +312,7 @@ def cleanup_expired():
     return removed
 
 
+@storage.synchronized
 def remove_user(user_id: str):
     """刪除特定用戶的驗證記錄"""
     link_data = _load_link_data()

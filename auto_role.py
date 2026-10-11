@@ -4,7 +4,7 @@ Auto Role 系統：根據 CF Rating 自動分發身份組
 import os
 from data_paths import data_path
 import json
-import requests
+from http_client import http_get
 import discord
 
 CONFIG_FILE = data_path("autorole_config.json")
@@ -61,7 +61,7 @@ def get_rating_tier(rating: int) -> tuple[str, int]:
 def get_cf_rating(handle: str) -> int | None:
     """從 CF API 取得用戶當前 rating"""
     try:
-        resp = requests.get(f"https://codeforces.com/api/user.info?handles={handle}")
+        resp = http_get(f"https://codeforces.com/api/user.info?handles={handle}")
         data = resp.json()
         if data["status"] != "OK":
             return None
@@ -74,7 +74,7 @@ def get_cf_rating(handle: str) -> int | None:
 def get_cf_rank(handle: str) -> str | None:
     """從 CF API 取得用戶 rank"""
     try:
-        resp = requests.get(f"https://codeforces.com/api/user.info?handles={handle}")
+        resp = http_get(f"https://codeforces.com/api/user.info?handles={handle}")
         data = resp.json()
         if data["status"] != "OK":
             return None
@@ -106,14 +106,14 @@ def get_cf_stats(handle: str) -> dict | None:
     """取得 CF 用戶詳細統計"""
     try:
         # user info
-        resp = requests.get(f"https://codeforces.com/api/user.info?handles={handle}")
+        resp = http_get(f"https://codeforces.com/api/user.info?handles={handle}")
         data = resp.json()
         if data["status"] != "OK":
             return None
         info = data["result"][0]
 
         # 已解題目統計
-        resp2 = requests.get(f"https://codeforces.com/api/user.status?handle={handle}&from=1&count=500")
+        resp2 = http_get(f"https://codeforces.com/api/user.status?handle={handle}&from=1&count=500")
         solved_set = set()
         tag_count = {}
         data2 = resp2.json()

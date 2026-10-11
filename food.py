@@ -1,8 +1,9 @@
+from plot_tools import serialized_plot
 """
 美食搜尋功能模組
 使用 OpenStreetMap 的 Nominatim 和 Overpass API 來搜尋附近美食
 """
-import requests
+from http_client import http_get
 import random
 from typing import Optional, List, Tuple
 import math
@@ -45,7 +46,7 @@ def geocode(location: str) -> Optional[dict]:
     }
 
     try:
-        resp = requests.get(NOMINATIM_URL, params=params, headers=headers, timeout=10)
+        resp = http_get(NOMINATIM_URL, params=params, headers=headers, timeout=10)
         resp.raise_for_status()
         data = resp.json()
 
@@ -90,7 +91,7 @@ def search_nearby_food(lat: float, lon: float, radius: int = 1000, limit: int = 
     }
 
     try:
-        resp = requests.get(OVERPASS_URL, params={"data": query}, headers=headers, timeout=30)
+        resp = http_get(OVERPASS_URL, params={"data": query}, headers=headers, timeout=30)
         resp.raise_for_status()
         data = resp.json()
 
@@ -236,6 +237,7 @@ AMENITY_COLORS = {
 }
 
 
+@serialized_plot
 def generate_food_map(places: List[dict], location_name: str = "") -> Optional[io.BytesIO]:
     """
     生成美食地圖圖片
@@ -357,6 +359,7 @@ def generate_food_map(places: List[dict], location_name: str = "") -> Optional[i
     return buf
 
 
+@serialized_plot
 def generate_food_map_simple(places: List[dict], selected_idx: int = None) -> Optional[io.BytesIO]:
     """
     生成簡化的美食地圖（更緊湊的版本，適合作為 Discord 附件）

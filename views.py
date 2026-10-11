@@ -1,6 +1,8 @@
 from data_paths import data_path
 import discord
 import time
+import asyncio
+import storage
 import json
 import os
 from discord import ui
@@ -552,7 +554,8 @@ class ProblemResultView(ui.View):
     @ui.button(label="🔄 再抽一批", style=discord.ButtonStyle.primary)
     async def refresh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         params = self.original_params
-        new_problems, result = throwcf.askprob(
+        await interaction.response.defer()
+        new_problems, result = await asyncio.to_thread(throwcf.askprob,
             mnrating=params.get("mnrating", 800),
             mxrating=params.get("mxrating", 3500),
             num=params.get("num", 5),
@@ -563,10 +566,10 @@ class ProblemResultView(ui.View):
             indices=params.get("indices"),
         )
         if not new_problems:
-            await interaction.response.send_message(embed=result if result else discord.Embed(title="Error", description="找不到符合條件的題目", color=0x903c3c), ephemeral=True)
+            await interaction.followup.send(embed=result if result else discord.Embed(title="Error", description="找不到符合條件的題目", color=0x903c3c), ephemeral=True)
             return
         new_view = ProblemResultView(problems=new_problems, page=0, original_params=params)
-        await interaction.response.edit_message(embed=await new_view._render_embed(), view=new_view)
+        await interaction.edit_original_response(embed=await new_view._render_embed(), view=new_view)
 
 
 class SettingsModal(ui.Modal, title="設定搜尋條件"):
@@ -651,13 +654,14 @@ class ProblemFinderView(ui.View):
         num = self.selections["count"]
         solved = bool(self.cf_handle)
         params = {"mnrating": mn, "mxrating": mx, "num": num, "solved": solved, "cf_handle": self.cf_handle, "tags": tags, "indices": None}
-        problems, result = throwcf.askprob(**params)
+        await i.response.defer()
+        problems, result = await asyncio.to_thread(throwcf.askprob, **params)
         if not problems:
-            await i.response.send_message(embed=result, ephemeral=True); return
+            await i.followup.send(embed=result, ephemeral=True); return
         self.current_problems = problems
         self.original_params = params
         rv = ProblemResultView(problems=problems, page=0, original_params=params)
-        await i.response.send_message(embed=await rv._render_embed(), view=rv)
+        await i.followup.send(embed=await rv._render_embed(), view=rv)
 
     @ui.button(label="↩️ 重置", style=discord.ButtonStyle.secondary, row=2)
     async def reset(self, i, b):
@@ -775,7 +779,8 @@ class DuelChallengeView(ui.View):
                 return
 
             # 抽題
-            duel_info, err = duel_mod.start_duel(
+            await i.response.defer()
+            duel_info, err = await asyncio.to_thread(duel_mod.start_duel,
                 challenger_cf=challenger_cf,
                 challenger_dc=self.challenger_name,
                 opponent_cf=opponent_cf,
@@ -788,12 +793,12 @@ class DuelChallengeView(ui.View):
             )
 
             if err:
-                await i.response.send_message(f"⚠️ {err}", ephemeral=True)
+                await i.followup.send(f"⚠️ {err}", ephemeral=True)
                 return
 
             # 存入 pending，2 分鐘後過期
             data = duel_mod._load_duel()
-            challenge_key = f"{self.challenger_name}_vs_{self.opponent_name}"
+            challenge_key = duel_info["duel_id"]
             data["pending"][challenge_key] = {
                 **duel_info,
                 "expires_at": time.time() + 120,  # 2 分鐘
@@ -804,6 +809,7 @@ class DuelChallengeView(ui.View):
                 "num_problems": self.num_problems,
                 "challenger_mention": self.challenger.mention,
                 "opponent_mention": self.opponent.mention,
+                "guild_id": i.guild.id,
                 "challenger_id": str(self.challenger.id),
                 "opponent_id": str(self.opponent.id)
             }
@@ -825,8 +831,8 @@ class DuelChallengeView(ui.View):
             )
             embed.set_footer(text=f"🤖 由 {self.challenger_name} 發起")
 
-            view = DuelAcceptView(self.challenger_name, self.opponent_name, duel_info, challenge_key)
-            await i.response.send_message(embed=embed, view=view)
+            view = DuelAcceptView(self.challenger_name, self.opponent_name, data["pending"][challenge_key], challenge_key)
+            await i.followup.send(embed=embed, view=view)
             self.stop()
 
         start_b.callback = start_cb
@@ -956,7 +962,9 @@ class DuelAcceptView(ui.View):
         self._responded = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.name != self.opponent_name:
+        opponent_id = self.duel_info.get("opponent_id")
+        allowed = (str(interaction.user.id) == str(opponent_id)) if opponent_id else (interaction.user.name == self.opponent_name)
+        if not allowed:
             await interaction.response.send_message("⚠️ 這不是你的挑戰！", ephemeral=True)
             return False
         return True
@@ -969,18 +977,14 @@ class DuelAcceptView(ui.View):
         self._responded = True
         self.stop()
 
-        # === 重新計算時間：從現在開始計時 ===
-        current_time = time.time()
-        duration_minutes = self.duel_info.get("duration_minutes", 10)
-        self.duel_info["start_time"] = current_time
-        self.duel_info["end_time"] = current_time + duration_minutes * 60
-
-        data = duel_mod._load_duel()
-        data["pending"].pop(self.challenge_key, None)
-
-        # 直接存入 active
-        data["active"][self.challenge_key] = self.duel_info
-        duel_mod._save_duel(data)
+        await interaction.response.defer()
+        info = duel_mod.accept_pending(self.challenge_key, interaction.guild.id,
+                                       interaction.channel.id, interaction.message.id)
+        if info is None:
+            await interaction.followup.send("⚠️ 挑戰已過期或被取消。", ephemeral=True)
+            return
+        self.duel_info = info
+        current_time = info["start_time"]
 
         problems = self.duel_info.get("problems", [])
 
@@ -1026,15 +1030,7 @@ class DuelAcceptView(ui.View):
         for child in self.children:
             child.disabled = True
 
-        # 保存訊息 ID 到 duel_info 以便後續更新
-        self.duel_info["update_message_id"] = interaction.message.id
-        self.duel_info["update_channel_id"] = interaction.channel.id
-        data = duel_mod._load_duel()
-        if self.challenge_key in data["active"]:
-            data["active"][self.challenge_key] = self.duel_info
-            duel_mod._save_duel(data)
-
-        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.edit_original_response(embed=embed, view=self)
         await interaction.followup.send(
             f"{self.challenger_name}、{self.opponent_name} 加油！💪\n"
             f"時間結束後 Bot 會公佈題目名稱，比較解題數量！",
@@ -1082,8 +1078,9 @@ def build_duel_score_embed(duel_info: dict, c_solves: dict, o_solves: dict, rema
     c_lines = [f"**{duel_info['challenger_dc']}**（{c_count}/{num_problems}）"]
     for p in problems:
         idx = p["index"]
-        if idx in c_solves:
-            t = unix_to_relative(c_solves[idx])
+        key = duel_mod.problem_key(p)
+        if key in c_solves:
+            t = unix_to_relative(c_solves[key])
             c_lines.append(f"✅ {idx} - {t}")
         else:
             c_lines.append(f"⬜ {idx}")
@@ -1093,8 +1090,9 @@ def build_duel_score_embed(duel_info: dict, c_solves: dict, o_solves: dict, rema
     o_lines = [f"**{duel_info['opponent_dc']}**（{o_count}/{num_problems}）"]
     for p in problems:
         idx = p["index"]
-        if idx in o_solves:
-            t = unix_to_relative(o_solves[idx])
+        key = duel_mod.problem_key(p)
+        if key in o_solves:
+            t = unix_to_relative(o_solves[key])
             o_lines.append(f"✅ {idx} - {t}")
         else:
             o_lines.append(f"⬜ {idx}")
@@ -1402,7 +1400,8 @@ class RoleSelectBuilderView(ui.View):
                 color=0x3489da
             )
             embed.set_footer(text="👇 點擊下方選擇身份組 👇")
-            view = build_user_role_select(self.selected_roles, self.guild)
+            await i.response.defer(ephemeral=True)
+            view = PersistentRoleMenu(self.guild, [role.id for role in self.selected_roles])
             msg = await channel.send(embed=embed, view=view)
 
             # 儲存
@@ -1416,7 +1415,7 @@ class RoleSelectBuilderView(ui.View):
             }
             save_persistent_selects(data)
 
-            await i.response.send_message(f"✅ 選單已發送至 <#{channel.id}>", ephemeral=True)
+            await i.followup.send(f"✅ 選單已發送至 <#{channel.id}>", ephemeral=True)
             self.stop()
         send_b.callback = send_cb
         self.add_item(send_b)
@@ -1499,7 +1498,7 @@ class RoleSelectView(ui.View):
             self.add_item(select)
 
 
-def build_user_role_select(roles: list, guild: discord.Guild):
+def build_user_role_select(roles: list, guild: discord.Guild, member=None):
     """為使用者建立內嵌身份組選擇視圖"""
     ITEMS_PER_PAGE = 25
     total_pages = max(1, (len(roles) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
@@ -1524,15 +1523,9 @@ def build_user_role_select(roles: list, guild: discord.Guild):
             end = min(start + ITEMS_PER_PAGE, len(role_options))
             page_opts = role_options[start:end]
 
-            # 取得當前用戶已選的身份組 ID
-            try:
-                member = view_self.guild.get_member(view_self.guild._state.view_handler.user.id) if hasattr(view_self.guild, '_state') else None
-            except:
-                member = None
-
-            current_selected = []
-            if member:
-                current_selected = [str(r.id) for r in member.roles]
+            current_selected = {str(role.id) for role in member.roles} if member else set()
+            for option in page_opts:
+                option.default = option.value in current_selected
 
             select = ui.Select(
                 placeholder=f"選擇身份組 ({view_self.current_page + 1}/{total_pages})",
@@ -1543,6 +1536,7 @@ def build_user_role_select(roles: list, guild: discord.Guild):
             )
 
             async def select_cb(i: discord.Interaction):
+                await i.response.defer(ephemeral=True)
                 member = i.user
                 current_role_ids = [str(r.id) for r in member.roles]
 
@@ -1580,9 +1574,7 @@ def build_user_role_select(roles: list, guild: discord.Guild):
                         msg_parts.append(f"✅ 已獲得：{', '.join(results_add)}")
                     if results_remove:
                         msg_parts.append(f"🚫 已移除：{', '.join(results_remove)}")
-                    await i.response.send_message('\n'.join(msg_parts), ephemeral=True)
-                else:
-                    await i.response.defer()
+                    await i.followup.send('\n'.join(msg_parts), ephemeral=True)
 
             select.callback = select_cb
             view_self.add_item(select)
@@ -1730,7 +1722,7 @@ class FoodLocationModal(ui.Modal, title="輸入地點"):
         )
         loading_msg = await interaction.followup.send(embed=loading_embed, wait=True)
 
-        result = food_mod.search_food_by_location(self.location.value, radius=self.parent_view.radius, limit=50)
+        result = await asyncio.to_thread(food_mod.search_food_by_location, self.location.value, radius=self.parent_view.radius, limit=50)
 
         if not result["success"]:
             await loading_msg.edit(
@@ -1825,7 +1817,7 @@ class FoodResultView(ui.View):
         await interaction.response.defer()
 
         # 生成地圖
-        map_buf = food_mod.generate_food_map_simple(self.places)
+        map_buf = await asyncio.to_thread(food_mod.generate_food_map_simple, self.places)
 
         if map_buf:
             short_name = self.location_info['display_name'].split(',')[0] if ',' in self.location_info['display_name'] else self.location_info['display_name']
@@ -1872,7 +1864,7 @@ class FoodResultView(ui.View):
         # 生成有標記的地圖
         await interaction.response.defer()
 
-        map_buf = food_mod.generate_food_map_simple(self.places, selected_idx=picked_idx)
+        map_buf = await asyncio.to_thread(food_mod.generate_food_map_simple, self.places, selected_idx=picked_idx)
 
         # 建立結果 embed
         embed = discord.Embed(
@@ -2040,3 +2032,46 @@ def build_food_results_embed(places: list, page: int, per_page: int, location_in
     embed.set_author(name=f"📍 {location_info.get('display_name', '未知地點')}")
 
     return embed
+
+class PersistentRoleMenu(ui.View):
+    """Public entry point; each member opens an independent private selector."""
+    def __init__(self, guild, role_ids):
+        super().__init__(timeout=None)
+        self.guild = guild
+        self.role_ids = [int(role_id) for role_id in role_ids]
+
+    @ui.button(label="📋 選擇身份組", style=discord.ButtonStyle.primary,
+               custom_id="fzbot:roles:open")
+    async def open_roles(self, interaction, button):
+        if not interaction.guild or interaction.guild.id != self.guild.id:
+            await interaction.response.send_message("⚠️ 此選單不屬於這個伺服器。", ephemeral=True)
+            return
+        roles = [self.guild.get_role(role_id) for role_id in self.role_ids]
+        roles = [role for role in roles if role is not None]
+        if not roles:
+            await interaction.response.send_message("⚠️ 選單中的身份組已不存在。", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "選擇要保留的身份組；取消選擇會移除該身份組。",
+            view=build_user_role_select(roles, self.guild, interaction.user), ephemeral=True)
+
+
+async def restore_role_menus(bot):
+    restored = getattr(bot, "_restored_role_menus", set())
+    bot._restored_role_menus = restored
+    for message_id, menu in load_persistent_selects().get("menus", {}).items():
+        if message_id in restored:
+            continue
+        guild = bot.get_guild(int(menu["guild_id"]))
+        channel = guild.get_channel(int(menu["channel_id"])) if guild else None
+        if not channel:
+            continue
+        view = PersistentRoleMenu(guild, menu.get("roles", {}).keys())
+        try:
+            message = await channel.fetch_message(int(message_id))
+            # Migrates legacy 180-second selectors to the persistent entry point.
+            await message.edit(view=view)
+            bot.add_view(view, message_id=int(message_id))
+            restored.add(message_id)
+        except discord.HTTPException as error:
+            print(f"[roleselect] 無法恢復選單 {message_id}: {error}")

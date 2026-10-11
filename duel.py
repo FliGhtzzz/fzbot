@@ -5,51 +5,57 @@ Bot 主動查 CF API 判斷誰先 AC
 from data_paths import data_path
 import os
 import time
-import requests
+from http_client import http_get
 import json
+import storage
+from uuid import uuid4
 import throwcf
 
 DUEL_FILE = data_path("duel_data.json")
 
 
 def _load_duel():
-    if not os.path.exists(DUEL_FILE):
-        with open(DUEL_FILE, "w") as f:
-            json.dump({"pending": {}, "active": {}, "history": []}, f)
-    with open(DUEL_FILE, "r") as f:
-        return json.load(f)
+    return storage.read_json("duel_data.json", {"pending": {}, "active": {}, "history": []})
 
 
 def _save_duel(data):
-    with open(DUEL_FILE, "w") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    storage.write_json("duel_data.json", data)
 
 
-def _check_solved_problems(handle: str, problems: list) -> dict:
+def problem_key(problem):
+    return f"{problem['contestId']}:{problem['index']}"
+
+
+def _check_solved_problems(handle: str, problems: list, start_time: float, end_time: float):
     """
     檢查使用者已解出哪些題目
     回傳：{problem_index: submit_time, ...}
     """
     solved = {}
     try:
-        resp = requests.get(
+        resp = http_get(
             f"https://codeforces.com/api/user.status?handle={handle}&from=1&count=200"
         )
         data = resp.json()
         if data["status"] != "OK":
-            return solved
+            return None
         for sub in data["result"]:
             if sub.get("verdict") != "OK":
+                continue
+            submitted_at = sub.get("creationTimeSeconds", 0)
+            if not int(start_time) <= submitted_at <= int(end_time):
                 continue
             prob = sub.get("problem", {})
             cid = prob.get("contestId")
             idx = prob.get("index")
             for p in problems:
                 if p["contestId"] == cid and p["index"] == idx:
-                    if idx not in solved or sub["creationTimeSeconds"] < solved[idx]:
-                        solved[idx] = sub["creationTimeSeconds"]
-    except:
-        pass
+                    key = problem_key(p)
+                    if key not in solved or submitted_at < solved[key]:
+                        solved[key] = submitted_at
+    except Exception as error:
+        print(f"[duel] Codeforces check failed: {error}")
+        return None
     return solved
 
 
@@ -79,6 +85,7 @@ def start_duel(challenger_dc: str, challenger_cf: str,
     avg_rating = total_rating // len(problems) if problems else 0
 
     duel_info = {
+        "duel_id": str(uuid4()),
         "challenger_dc": challenger_dc,
         "challenger_cf": challenger_cf,
         "opponent_dc": opponent_dc,
@@ -124,8 +131,11 @@ def check_duel_result(duel_info: dict, force_check: bool = False) -> dict:
     o_cf = duel_info["opponent_cf"]
 
     # 檢查雙方已解題目
-    challenger_solves = _check_solved_problems(c_cf, problems)
-    opponent_solves = _check_solved_problems(o_cf, problems)
+    challenger_solves = _check_solved_problems(c_cf, problems, duel_info["start_time"], end_time)
+    opponent_solves = _check_solved_problems(o_cf, problems, duel_info["start_time"], end_time)
+
+    if challenger_solves is None or opponent_solves is None:
+        return {"status": "retry"}
 
     # 更新 duel_info 中的 solved 記錄
     duel_info["challenger_solves"] = challenger_solves
@@ -164,7 +174,7 @@ def check_duel_result(duel_info: dict, force_check: bool = False) -> dict:
         result = _build_win_result(duel_info, "challenger", challenger_solves, opponent_solves, "all solved first")
     elif o_all_solved:
         result = _build_win_result(duel_info, "opponent", challenger_solves, opponent_solves, "all solved first")
-    elif current_time >= end_time or force_check:
+    elif current_time >= end_time:
         # 時間到或強制檢查，比較解題數量
         if c_count > o_count:
             result = _build_win_result(duel_info, "challenger", challenger_solves, opponent_solves, "time up, more solves")
@@ -229,13 +239,7 @@ def update_leaderboard(winner_dc: str, winner_cf: str,
                        loser_dc: str, loser_cf: str,
                        is_tie: bool, duel_info: dict):
     """更新 leaderboard.json"""
-    lb_file = data_path("leaderboard.json")
-    if not os.path.exists(lb_file):
-        with open(lb_file, "w") as f:
-            json.dump({}, f)
-
-    with open(lb_file, "r") as f:
-        lb = json.load(f)
+    lb = storage.read_json("leaderboard.json", {})
 
     def record(dc, cf):
         if dc not in lb:
@@ -260,17 +264,12 @@ def update_leaderboard(winner_dc: str, winner_cf: str,
         lb[winner_dc]["points"] += 3  # 勝利 3 分
         lb[loser_dc]["points"] += 0
 
-    with open(lb_file, "w") as f:
-        json.dump(lb, f, indent=4, ensure_ascii=False)
+    storage.write_json("leaderboard.json", lb)
 
 
 def get_leaderboard() -> list:
     """取得排序過的 leaderboard"""
-    lb_file = data_path("leaderboard.json")
-    if not os.path.exists(lb_file):
-        return []
-    with open(lb_file, "r") as f:
-        lb = json.load(f)
+    lb = storage.read_json("leaderboard.json", {})
 
     # 計算勝率並排序（按積分）
     items = []
@@ -295,11 +294,7 @@ def get_leaderboard() -> list:
 
 def get_user_stats(dc_name: str) -> dict | None:
     """取得特定用戶的 duel 統計"""
-    lb_file = data_path("leaderboard.json")
-    if not os.path.exists(lb_file):
-        return None
-    with open(lb_file, "r") as f:
-        lb = json.load(f)
+    lb = storage.read_json("leaderboard.json", {})
     stats = lb.get(dc_name)
     if stats:
         stats["wins"] = stats.get("wins", 0)
@@ -308,3 +303,51 @@ def get_user_stats(dc_name: str) -> dict | None:
         stats["points"] = stats.get("points", 0)
         stats["cf_handle"] = stats.get("cf_handle", "")
     return stats
+
+def expire_pending(now=None):
+    now = time.time() if now is None else now
+    with storage.lock:
+        data = _load_duel()
+        expired = [(key, info) for key, info in data["pending"].items()
+                   if 0 < info.get("expires_at", 0) < now]
+        for key, _ in expired:
+            del data["pending"][key]
+        if expired:
+            _save_duel(data)
+        return expired
+
+
+def finalize_duel(key, expected, result):
+    """Commit against current state before awaiting any Discord notification."""
+    with storage.lock:
+        data = _load_duel()
+        current = data["active"].get(key)
+        if current is None or current.get("duel_id", current["start_time"]) != expected.get("duel_id", expected["start_time"]):
+            return False
+        if result.get("winner") is None:
+            update_leaderboard(expected["challenger_dc"], expected["challenger_cf"],
+                               expected["opponent_dc"], expected["opponent_cf"], True, expected)
+        else:
+            update_leaderboard(result["winner"], result["winner_cf"],
+                               result["loser"], result["loser_cf"], False, expected)
+        del data["active"][key]
+        data["history"].append({"key": key, "result": result, "finalized_at": time.time()})
+        _save_duel(data)
+        return True
+
+
+def accept_pending(key, guild_id, channel_id, message_id):
+    with storage.lock:
+        data = _load_duel()
+        pending = data["pending"].get(key)
+        now = time.time()
+        if not pending or pending.get("expires_at", 0) <= now:
+            return None
+        info = pending.copy()
+        info.update(start_time=now, end_time=now + info.get("duration_minutes", 10) * 60,
+                    guild_id=guild_id, update_channel_id=channel_id,
+                    update_message_id=message_id)
+        del data["pending"][key]
+        data["active"][key] = info
+        _save_duel(data)
+        return info

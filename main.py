@@ -11,6 +11,7 @@ import auto_role
 import views  # 互動式 UI 元件
 import asyncio
 import time
+import storage
 # 導入commands指令模組
 from discord.ext import commands
 
@@ -57,6 +58,7 @@ async def on_ready():
     if not os.path.exists(RSFILE):
         with open(RSFILE, "w") as f:
             json.dump({"menus": {}}, f, ensure_ascii=False, indent=2)
+    await views.restore_role_menus(bot)
     # Reconnects can trigger on_ready again; retain one instance of each task.
     for task_fn in (duel_check_loop, check_expired_verifications,
                     check_expired_pending_duels, status_cycle_loop):
@@ -131,51 +133,26 @@ async def check_expired_pending_duels():
     await bot.wait_until_ready()
     while True:
         try:
-            data = duel._load_duel()
-            pending = data.get("pending", {})
-            current_time = time.time()
-            expired_keys = []
-
-            for key, pending_info in list(pending.items()):
-                expires_at = pending_info.get("expires_at", 0)
-                if expires_at > 0 and current_time > expires_at:
-                    expired_keys.append(key)
-
-            for key in expired_keys:
-                pending_info = pending[key]
-                # 嘗試找到 challenger 並發 DM 通知
+            # Remove only expired entries in a fresh transaction, before sending DMs.
+            expired = duel.expire_pending()
+            for key, pending_info in expired:
                 challenger_id = pending_info.get("challenger_id")
                 if challenger_id:
-                    for guild in bot.guilds:
-                        member = guild.get_member(int(challenger_id))
-                        if member:
-                            try:
-                                opponent_mention = pending_info.get("opponent_mention", "Unknown")
-                                num_problems = pending_info.get("num_problems", 3)
-                                duration = pending_info.get("duration_minutes", 10)
-                                embed = discord.Embed(
-                                    title="⏰ Duel 挑戰已取消",
-                                    description=(
-                                        f"你的 Duel 挑戰未被回應，已自動取消。\n\n"
-                                        f"對手：{opponent_mention}\n"
-                                        f"題目數：{num_problems} 題\n"
-                                        f"時間限制：{duration} 分鐘"
-                                    ),
-                                    color=0x903c3c
-                                )
-                                await member.send(embed=embed)
-                                print(f"[duel pending] 已通知 {member.name} 挑戰已取消")
-                            except discord.Forbidden:
-                                print(f"[duel pending] 無法發送 DM 给 {member.name}")
-                            except Exception as e:
-                                print(f"[duel pending] 發送 DM 失敗: {e}")
-
-                # 刪除過期的 pending duel
-                del pending[key]
+                    user = bot.get_user(int(challenger_id))
+                    if user is None:
+                        try:
+                            user = await bot.fetch_user(int(challenger_id))
+                        except discord.HTTPException:
+                            user = None
+                    if user:
+                        try:
+                            await user.send(embed=discord.Embed(
+                                title="⏰ Duel 挑戰已取消",
+                                description="挑戰未在兩分鐘內被接受，已自動取消。",
+                                color=0x903c3c))
+                        except discord.HTTPException as error:
+                            print(f"[duel pending] 通知失敗 {key}: {error}")
                 print(f"[duel pending] 已移除過期挑戰: {key}")
-
-            if expired_keys:
-                duel._save_duel(data)
 
         except Exception as e:
             print(f"[duel pending check error] {e}")
@@ -222,131 +199,65 @@ async def status_cycle_loop():
         await asyncio.sleep(10)
 
 
+def duel_channel(info):
+    """Resolve the stored guild, with channel-based fallback for old records."""
+    channel_id = info.get("update_channel_id")
+    guild_id = info.get("guild_id")
+    if guild_id:
+        guild = bot.get_guild(int(guild_id))
+        return guild.get_channel(int(channel_id)) if guild and channel_id else None
+    return bot.get_channel(int(channel_id)) if channel_id else None
+
+
+async def duel_participant(info, side):
+    user_id = info.get(f"{side}_id")
+    if user_id:
+        user = bot.get_user(int(user_id))
+        if user is not None:
+            return user
+        try:
+            return await bot.fetch_user(int(user_id))
+        except discord.HTTPException:
+            return None
+    # Old records predate participant IDs. Resolve within their originating guild.
+    channel = duel_channel(info)
+    guild = getattr(channel, "guild", None)
+    if guild:
+        return next((member for member in guild.members
+                     if member.name == info.get(f"{side}_dc")), None)
+    return None
+
+
 async def check_and_finalize_duels():
-    """檢查所有 active duel 並結算，更新記分板"""
-    data = duel._load_duel()
-    changed = False
-    to_complete = []
-    to_update = []  # 需要更新記分板的 duel
-
-    current_time = time.time()
-
-    for key, duel_info in list(data.get("active", {}).items()):
-        end_time = duel_info.get("end_time", duel_info["start_time"] + 300)
-        remaining = int(end_time - current_time)
-
-        # 判斷是否的最後一輪檢測（時間到前的最後 30 秒內）
-        is_final_check = remaining <= 30 and remaining > 0
-
-        # 如果是最後一輪檢測，強制完整結算
-        if is_final_check:
-            result = duel.check_duel_result(duel_info, force_check=True)
-            if result["status"] == "completed":
-                to_complete.append((key, result, duel_info))
+    """HTTP runs off-thread; commit each result before any notification awaits."""
+    snapshot = duel._load_duel()
+    for key, info in list(snapshot.get("active", {}).items()):
+        result = await asyncio.to_thread(duel.check_duel_result, info)
+        if result["status"] == "retry":
             continue
-
-        # 正常檢查是否完成（有人解完所有題目）
-        result = duel.check_duel_result(duel_info)
-        remaining = int(end_time - current_time)  # 重新計算剩餘時間
-
-        # 如果已完成（有人解完），結算
-        if result["status"] == "completed":
-            to_complete.append((key, result, duel_info))
-        elif remaining <= 0:
-            # 時間到，強制結算（這是最後的 safety net）
-            result = duel.check_duel_result(duel_info, force_check=True)
-            if result["status"] == "completed":
-                to_complete.append((key, result, duel_info))
-        else:
-            # 還在進行中，標記需要更新記分板
-            if "update_message_id" in duel_info and "update_channel_id" in duel_info:
-                to_update.append((key, duel_info, result, remaining))
-
-    # 更新記分板
-    for key, duel_info, result, remaining in to_update:
-        try:
-            guild = bot.guilds[0]
-            channel_id = duel_info.get("update_channel_id")
-            message_id = duel_info.get("update_message_id")
-
-            channel = guild.get_channel(channel_id)
-            if not channel:
-                continue
-
-            message = await channel.fetch_message(message_id)
-            if not message:
-                continue
-
-            c_solves = result.get("challenger_solves_raw", {})
-            o_solves = result.get("opponent_solves_raw", {})
-
-            embed = views.build_duel_score_embed(duel_info, c_solves, o_solves, remaining)
-            await message.edit(embed=embed, view=None)  # 移除按鈕
-            print(f"[duel] 更新記分板 {key}")
-        except Exception as e:
-            print(f"[duel] 更新記分板失敗 {key}: {e}")
-
-    # 結算已完成的 duel
-    for key, result, duel_info in to_complete:
-        # 更新 leaderboard
-        is_tie = result.get("winner") is None
-
-        if not is_tie:
-            winner_dc = result.get("winner", "tie")
-            winner_cf = result.get("winner_cf", "")
-            loser_dc = result.get("loser", "tie")
-            loser_cf = result.get("loser_cf", "")
-            duel.update_leaderboard(
-                winner_dc, winner_cf,
-                loser_dc, loser_cf,
-                False, duel_info
-            )
-        else:
-            c_cf = duel_info.get("challenger_cf")
-            o_cf = duel_info.get("opponent_cf")
-            duel.update_leaderboard(
-                duel_info["challenger_dc"], c_cf,
-                duel_info["opponent_dc"], o_cf,
-                True, duel_info
-            )
-
-        data["active"].pop(key, None)
-        data["history"].append({
-            "key": key,
-            "result": result,
-            "finalized_at": time.time()
-        })
-        changed = True
-
-        # 更新訊息為結果（公佈題目）
-        try:
-            guild = bot.guilds[0]
-            channel_id = duel_info.get("update_channel_id")
-            message_id = duel_info.get("update_message_id")
-
-            if channel_id and message_id:
-                channel = guild.get_channel(channel_id)
-                if channel:
-                    message = await channel.fetch_message(message_id)
-                    if message:
-                        embed = views.build_duel_result_embed(duel_info, result)
-                        await message.edit(embed=embed, view=None)
-                        print(f"[duel] 已結算並更新訊息 {key}")
-        except Exception as e:
-            print(f"[duel] 更新結果訊息失敗 {key}: {e}")
-
-        # 發 DM 通知雙方
-        try:
-            for member in guild.members:
-                if member.name == duel_info["challenger_dc"]:
-                    await send_duel_result_dm(member, result, duel_info)
-                if member.name == duel_info["opponent_dc"]:
-                    await send_duel_result_dm(member, result, duel_info)
-        except Exception as e:
-            print(f"[duel dm error] {e}")
-
-    if changed:
-        duel._save_duel(data)
+        completed = result["status"] == "completed"
+        if completed and not duel.finalize_duel(key, info, result):
+            continue
+        channel = duel_channel(info)
+        message_id = info.get("update_message_id")
+        if channel and message_id:
+            try:
+                message = await channel.fetch_message(int(message_id))
+                if completed:
+                    embed = views.build_duel_result_embed(info, result)
+                else:
+                    remaining = max(0, int(info.get("end_time", info["start_time"] + 300) - time.time()))
+                    embed = views.build_duel_score_embed(
+                        info, result.get("challenger_solves_raw", {}),
+                        result.get("opponent_solves_raw", {}), remaining)
+                await message.edit(embed=embed, view=None)
+            except discord.HTTPException as error:
+                print(f"[duel] 訊息更新失敗 {key}: {error}")
+        if completed:
+            for side in ("challenger", "opponent"):
+                user = await duel_participant(info, side)
+                if user:
+                    await send_duel_result_dm(user, result, info)
 
 
 async def send_duel_result_dm(user: discord.User, result: dict, duel_info: dict):
@@ -395,8 +306,9 @@ async def send_duel_result_dm(user: discord.User, result: dict, duel_info: dict)
 # ============================================================
 @bot.tree.command(name="searchcf", description="搜尋 Codeforces 用戶資訊")
 async def searchcf(interaction: discord.Interaction, cfhandle: str):
-    embed = auto_role.build_rating_embed(cfhandle, interaction.user)
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.defer()
+    embed = await asyncio.to_thread(auto_role.build_rating_embed, cfhandle, interaction.user)
+    await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="help", description="列出所有指令")
@@ -525,7 +437,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 async def cnttocf(interaction: discord.Interaction, cfhandle: str):
     await interaction.response.defer(ephemeral=True)
     user_id = str(interaction.user.id)
-    result = linkcf.askforcf(user_id, interaction.user.name, cfhandle)
+    result = await asyncio.to_thread(linkcf.askforcf, user_id, interaction.user.name, cfhandle)
     await interaction.followup.send(result, ephemeral=True)
 
     # 如果建立成功，就設定 2 分鐘後的過期通知
@@ -539,7 +451,7 @@ async def cnttocf(interaction: discord.Interaction, cfhandle: str):
 @bot.tree.command(name="vercf", description="驗證連結 Codeforces")
 async def vercf(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    result = linkcf.vertifycf(str(interaction.user.id), interaction.user.name)
+    result = await asyncio.to_thread(linkcf.vertifycf, str(interaction.user.id), interaction.user.name)
     await interaction.followup.send(result, ephemeral=True)
 
     # 如果成功，發 DM 確認
@@ -576,7 +488,7 @@ async def unlink_cmd(interaction: discord.Interaction):
 @bot.tree.command(name="ratingcf", description="顯示 Codeforces 帳號的 Rating 變化圖")
 async def ratingcf(interaction: discord.Interaction, cfhandle: str):
     await interaction.response.defer()
-    result = cfrating.rating(cfhandle)
+    result = await asyncio.to_thread(cfrating.rating, cfhandle)
     embed = discord.Embed()
     embed.set_author(
         name=f"Rating of {cfhandle}",
@@ -1208,7 +1120,7 @@ async def roleselect(interaction: discord.Interaction):
     embed.set_footer(text="點擊「❌ 關閉」結束")
 
     # 使用內嵌選擇視圖
-    view = views.build_user_role_select(role_objs, guild)
+    view = views.build_user_role_select(role_objs, guild, interaction.user)
 
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 

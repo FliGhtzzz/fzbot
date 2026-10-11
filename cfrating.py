@@ -1,15 +1,16 @@
 import matplotlib.pyplot as plt
 import discord
-import requests
+from http_client import http_get
 import datetime
 import io
-import matplotlib.dates as mdates
+from plot_tools import serialized_plot
 
+@serialized_plot
 def rating(cfhandle): 
     url = f"https://codeforces.com/api/user.rating?handle={cfhandle}"
     
     try:
-        response = requests.get(url)
+        response = http_get(url)
         data = response.json()
         if data["status"] != "OK":
             return f"Error : {data['comment']}"

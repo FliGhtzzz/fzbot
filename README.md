@@ -59,3 +59,17 @@ docker compose up -d
 git pull --ff-only
 docker compose up -d --build
 ```
+
+## 回歸測試
+
+```bash
+docker compose build
+docker compose run --rm --no-deps bot python -m unittest -v test_runtime
+```
+
+測試使用臨時資料目錄與 mock API，不連線 Discord、不修改正式資料。
+
+公開角色選單改用「選擇身份組」按鈕，每個使用者開啟自己的私密選單。
+啟動時會恢復已保存的公開選單，並將舊版選單轉成持久化入口。
+JSON 資料以原子替換寫入；請保持單一 Bot 容器運行。
+對戰只計算開始至截止時間內的 AC；外部 API 失敗時保留對戰，稍後重試結算。
